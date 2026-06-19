@@ -267,8 +267,8 @@ class Handler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        if self.path in ("/", "/index.html"):
-            self.path = "/indigo-occ-hub.html"
+        if self.path == "/":
+            self.path = "/index.html"
         return super().do_GET()
 
 

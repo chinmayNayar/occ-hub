@@ -3,7 +3,7 @@
 IndiGo (6E) Operations Control Centre  -  Orbital Topology GUI generator
 ========================================================================
 Run:  python3 generate_occ.py
-Out:  indigo-occ-hub.html   (single self-contained file, open in any browser)
+Out:  index.html   (single self-contained file; GitHub Pages + local server)
 
 Layout:
   ONE big rectangle ("CORE SYSTEMS FABRIC") holds everything backend:
@@ -1183,12 +1183,8 @@ def main():
     base = Path(__file__).resolve().parent
     config = build_config(base)
     html = TEMPLATE.replace("__CONFIG__", json.dumps(config))
-    outputs = [
-        base / "indigo-occ-hub.html",
-        base / "indigo-occ-hub (1).html",
-    ]
-    for out in outputs:
-        out.write_text(html, encoding="utf-8")
+    out = base / "index.html"
+    out.write_text(html, encoding="utf-8")
     groups = config.get("apiGroups", {})
     down = [
         it["name"]
@@ -1197,9 +1193,7 @@ def main():
         if it.get("health") in ("down", "crit")
     ]
     counts = {k: len(v) for k, v in groups.items()}
-    primary = outputs[0]
-    print(f"[ok] wrote {primary}  ({primary.stat().st_size/1024:.1f} KB)")
-    print(f"[ok] synced {outputs[1].name}")
+    print(f"[ok] wrote {out}  ({out.stat().st_size/1024:.1f} KB)")
     print(f"[i] apps={len(config['apps'])}  ms={len(config['ms'])}  group-boxes={len(config.get('groupBoxes', []))}")
     print(f"[i] group counts: {counts}")
     print(f"[i] internal panel lists {counts.get('internal', 0)} APIs on click")
