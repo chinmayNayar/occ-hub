@@ -202,13 +202,13 @@ DEFAULT_CONFIG = {
     "viewBox": "0 0 1860 1380",
     "CX": CX,
     "CY": CY,
-    "container": {"x": 480, "y": 280, "w": 900, "h": 740, "label": "CORE SYSTEMS FABRIC"},
+    "container": {"x": 480, "y": 280, "w": 900, "h": 780, "label": "CORE SYSTEMS FABRIC"},
     "mf": {"x": 700, "y": 328, "w": 250, "h": 52, "label": "MF", "sub": "MAINFRAME", "mon": "M1"},
     "hub": {"x": 700, "y": 408, "w": 390, "h": 300, "label": "MS"},
     "ms": ["ODM", "OFM", "OCM", "OWM", "ODIM", "OBM", "OLRM", "ORM", "OSM", "OIM", "OESM"],
     "spine": [
-        {"id": "mongo", "label": "MongoDB", "sub": "document store", "x": 620, "y": 728, "w": 104, "h": 84, "color": "#2E7BFF"},
-        {"id": "aims", "label": "AIMS DB", "sub": "system of record", "x": 780, "y": 728, "w": 104, "h": 84, "color": "#59E0FF"},
+        {"id": "mongo", "label": "MongoDB", "sub": "document store", "x": 620, "y": 800, "w": 104, "h": 84, "color": "#2E7BFF"},
+        {"id": "aims", "label": "AIMS DB", "sub": "system of record", "x": 780, "y": 800, "w": 104, "h": 84, "color": "#59E0FF"},
     ],
     "apiGroups": {},
     "groupBoxes": [],
@@ -824,7 +824,7 @@ const MF=CFG.mf;
   g.addEventListener('click',e=>{e.stopPropagation();showPanel('MF','Mainframe','info',
     row('System','MF')+row('Monitoring',MF.mon||CFG.mf.mon||'M1')+row('Type','Mainframe of record')+row('Feeds','MS · pipeline')+row('Status','operational'));});
 })();
-NODES.mf={x:MF.x,y:MF.y+MF.h,bottom:{x:MF.x,y:MF.y+MF.h}};
+NODES.mf={x:MF.x,y:MF.y+MF.h/2,top:{x:MF.x,y:MF.y},bottom:{x:MF.x,y:MF.y+MF.h},left:{x:MF.x-MF.w/2,y:MF.y+MF.h/2},right:{x:MF.x+MF.w/2,y:MF.y+MF.h/2}};
 
 /* ===== MS box ===== */
 const H=CFG.hub;
@@ -889,7 +889,7 @@ const H=CFG.hub;
 })();
 NODES.hub={x:H.x,y:H.y+H.h/2,top:{x:H.x,y:H.y},right:{x:H.x+H.w/2,y:H.y+H.h/2},bottom:{x:H.x,y:H.y+H.h}};
 /* MF -> MS link */
-Llinks.appendChild(el('path',{d:`M ${MF.x} ${MF.y+MF.h} L ${H.x} ${H.y}`,fill:'none',stroke:'rgba(110,139,255,.4)','stroke-width':1.4}));
+Llinks.appendChild(el('path',{d:`M ${MF.x} ${MF.y+MF.h} L ${H.x} ${H.y}`,fill:'none',stroke:'rgba(110,139,255,.65)','stroke-width':2.2,filter:'url(#glow)'}));
 
 /* ===== data stores (mongo/aims) — cylinder icons below MS ===== */
 CFG.spine.forEach(s=>{
@@ -946,14 +946,15 @@ function bez(p0,p1,p2,p3,t){const u=1-t;return{
 function flowLink(a,b,color,spd){
   const c1={x:(a.x+b.x)/2,y:a.y},c2={x:(a.x+b.x)/2,y:b.y};
   const d=`M ${a.x} ${a.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${b.x} ${b.y}`;
-  Llinks.appendChild(el('path',{d,fill:'none',stroke:color,'stroke-width':1.8,opacity:.6}));
-  const dot=el('circle',{r:3,fill:color.replace(/[\d.]+\)$/,'1)'),filter:'url(#glow)'});Lpart.appendChild(dot);
+  Llinks.appendChild(el('path',{d,fill:'none',stroke:color,opacity:.18,'stroke-width':12}));
+  Llinks.appendChild(el('path',{d,fill:'none',stroke:color,'stroke-width':2.6,opacity:.88,filter:'url(#glow)'}));
+  const dot=el('circle',{r:3.6,fill:color.replace(/[\d.]+\)$/,'1)'),filter:'url(#glow)'});Lpart.appendChild(dot);
   flowSegs.push({a,c1,c2,b,dot,t:Math.random(),speed:spd||0.6});
 }
 function linkLabel(p,x,y,txt){
-  const fs=9.5,padX=8,padY=4,w=Math.max(txt.length*5.4+padX*2,42),h=fs+padY*2;
-  p.appendChild(el('rect',{x:x-w/2,y:y-h/2,width:w,height:h,rx:5,fill:'rgba(6,10,28,.92)',stroke:'rgba(90,140,255,.45)','stroke-width':1}));
-  const t=el('text',{x,y,'text-anchor':'middle','dominant-baseline':'middle','font-size':fs,fill:'#E8F0FF','font-weight':700,'font-family':'var(--mono)','letter-spacing':.3});
+  const fs=10,padX=9,padY=5,w=Math.max(txt.length*5.8+padX*2,48),h=fs+padY*2;
+  p.appendChild(el('rect',{x:x-w/2,y:y-h/2,width:w,height:h,rx:6,fill:'rgba(8,14,36,.94)',stroke:'rgba(110,160,255,.55)','stroke-width':1.2}));
+  const t=el('text',{x,y,'text-anchor':'middle','dominant-baseline':'middle','font-size':fs,fill:'#F0F6FF','font-weight':700,'font-family':'var(--mono)','letter-spacing':.3});
   t.textContent=txt;p.appendChild(t);
 }
 function spineFlowLink(a,b,color,lbl,pos){
@@ -961,23 +962,37 @@ function spineFlowLink(a,b,color,lbl,pos){
   const c1=dy>=dx?{x:(a.x+b.x)/2,y:a.y}:{x:a.x,y:(a.y+b.y)/2};
   const c2=dy>=dx?{x:(a.x+b.x)/2,y:b.y}:{x:b.x,y:(a.y+b.y)/2};
   const d=`M ${a.x} ${a.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${b.x} ${b.y}`;
-  Llinks.appendChild(el('path',{d,fill:'none',stroke:color,opacity:.22,'stroke-width':14}));
-  Llinks.appendChild(el('path',{d,fill:'none',stroke:color,'stroke-width':4.5,opacity:.95,filter:'url(#glow)'}));
-  Llinks.appendChild(el('path',{d,fill:'none',stroke:'#D8EEFF','stroke-width':1.6,opacity:.85,'stroke-dasharray':'10 7'}));
+  Llinks.appendChild(el('path',{d,fill:'none',stroke:color,opacity:.32,'stroke-width':16}));
+  Llinks.appendChild(el('path',{d,fill:'none',stroke:color,'stroke-width':5.5,opacity:1,filter:'url(#glow)'}));
+  Llinks.appendChild(el('path',{d,fill:'none',stroke:'#E8F4FF','stroke-width':2,opacity:.92,'stroke-dasharray':'10 7'}));
   if(lbl){
     const lx=pos?.x??(a.x+b.x)/2;
     const ly=pos?.y??((a.y+b.y)/2);
     linkLabel(LlinkLbl,lx,ly,lbl);
   }
   for(let i=0;i<3;i++){
-    const dot=el('circle',{r:i?3.2:4.5,fill:'#59E0FF',filter:'url(#glow)'});Lpart.appendChild(dot);
+    const dot=el('circle',{r:i?3.6:5,fill:'#6AE8FF',filter:'url(#glow)'});Lpart.appendChild(dot);
     flowSegs.push({a,c1,c2,b,dot,t:Math.random(),speed:1.05+i*0.18});
   }
 }
-spineFlowLink(NODES.hub.bottom, NODES.mongo.top, 'rgba(46,123,255,.95)', 'MS → MongoDB', {x:612,y:718});
+spineFlowLink(NODES.hub.bottom, NODES.mongo.top, 'rgba(46,123,255,.95)', 'MS → MongoDB', {x:612,y:754});
+if(NODES.aims&&NODES.sp) spineFlowLink(NODES.aims.right, NODES.sp.left, 'rgba(89,224,255,.95)', 'AIMS DB → SP', {x:920,y:640});
+/* MongoDB hub — feeds MF, MS (labelled spine link above), and every API group */
+if(NODES.mongo){
+  const mongoCol='rgba(46,123,255,.72)';
+  if(NODES.mf) flowLink(NODES.mongo.left, NODES.mf.left, mongoCol, 0.48);
+  const boxes=CFG.groupBoxes||[];
+  boxes.forEach((box,i)=>{
+    const n=NODES[box.id];
+    if(!n) return;
+    const frac=boxes.length>1?i/(boxes.length-1):0.5;
+    const src={x:NODES.mongo.right.x,y:NODES.mongo.top.y+(NODES.mongo.bottom.y-NODES.mongo.top.y)*frac};
+    flowLink(src, n.left, mongoCol, 0.38+i*0.03);
+  });
+}
 for(let i=0;i<(CFG.groupBoxes||[]).length-1;i++){
   const a=NODES[CFG.groupBoxes[i].id], b=NODES[CFG.groupBoxes[i+1].id];
-  if(a&&b) flowLink(a.bottom, b.top, 'rgba(79,139,255,.55)');
+  if(a&&b) flowLink(a.bottom, b.top, 'rgba(79,139,255,.72)');
 }
 
 /* ===== floating apps ===== */
