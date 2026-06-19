@@ -3,7 +3,7 @@
 IndiGo (6E) Operations Control Centre  -  Orbital Topology GUI generator
 ========================================================================
 Run:  python3 generate_occ.py
-Out:  index.html   (single self-contained file; GitHub Pages + local server)
+Out:  index.html + docs/index.html   (local + GitHub Pages from /docs on main)
 
 Layout:
   ONE big rectangle ("CORE SYSTEMS FABRIC") holds everything backend:
@@ -1184,7 +1184,12 @@ def main():
     config = build_config(base)
     html = TEMPLATE.replace("__CONFIG__", json.dumps(config))
     out = base / "index.html"
+    docs_dir = base / "docs"
+    docs_dir.mkdir(exist_ok=True)
+    docs_out = docs_dir / "index.html"
     out.write_text(html, encoding="utf-8")
+    docs_out.write_text(html, encoding="utf-8")
+    (docs_dir / ".nojekyll").touch()
     groups = config.get("apiGroups", {})
     down = [
         it["name"]
@@ -1194,6 +1199,7 @@ def main():
     ]
     counts = {k: len(v) for k, v in groups.items()}
     print(f"[ok] wrote {out}  ({out.stat().st_size/1024:.1f} KB)")
+    print(f"[ok] wrote {docs_out}  (GitHub Pages)")
     print(f"[i] apps={len(config['apps'])}  ms={len(config['ms'])}  group-boxes={len(config.get('groupBoxes', []))}")
     print(f"[i] group counts: {counts}")
     print(f"[i] internal panel lists {counts.get('internal', 0)} APIs on click")
