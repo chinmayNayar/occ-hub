@@ -26,6 +26,7 @@ from urllib.parse import urlparse
 
 BASE = Path(__file__).resolve().parent
 DATA_PATH = BASE / os.environ.get("OCC_DATA", "occ_data.json")
+LAYOUT_PATH = BASE / "occ_layout.json"
 PORT = int(os.environ.get("OCC_PORT", "8765"))
 API_BASE = os.environ.get("OCC_API_BASE", "").rstrip("/")
 PROBE_TIMEOUT = float(os.environ.get("OCC_PROBE_TIMEOUT", "4"))
@@ -243,6 +244,16 @@ def build_health_report(force: bool = False) -> dict:
     return report
 
 
+def load_layout() -> dict:
+    if LAYOUT_PATH.exists():
+        return json.loads(LAYOUT_PATH.read_text(encoding="utf-8"))
+    return {}
+
+
+def save_layout(data: dict) -> None:
+    LAYOUT_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(BASE), **kwargs)
@@ -267,9 +278,38 @@ class Handler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if self.path == "/api/layout":
+            body = json.dumps(load_layout()).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path == "/":
             self.path = "/index.html"
         return super().do_GET()
+
+    def do_POST(self):
+        if self.path == "/api/layout":
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                data = json.loads(raw.decode("utf-8"))
+            except json.JSONDecodeError:
+                self.send_response(400)
+                self.end_headers()
+                return
+            save_layout(data)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            body = json.dumps({"ok": True, "saved": str(LAYOUT_PATH)}).encode()
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        self.send_response(404)
+        self.end_headers()
 
 
 def main():
