@@ -213,7 +213,7 @@ DEFAULT_CONFIG = {
     "apiGroups": {},
     "groupBoxes": [],
     "apps": [],
-    "rings": [{"rx": 800, "ry": 560}, {"rx": 1000, "ry": 680}],
+    "rings": [{"rx": 880, "ry": 600}, {"rx": 1020, "ry": 700}],
     "links": [],
 }
 
@@ -395,6 +395,9 @@ TEMPLATE = r"""<!DOCTYPE html>
   .db-node:hover{filter:url(#hoverglow)}
   .planet{cursor:pointer;transition:filter .18s}
   .planet:hover{filter:url(#hoverglow)}
+  .planet .app-name{pointer-events:none;user-select:none}
+  .planet .app-name tspan{fill:var(--ink)}
+  .planet.hot .app-name tspan,.planet:hover .app-name tspan{fill:#F4F8FF}
   .dim{opacity:.12;transition:opacity .25s}.hot{opacity:1 !important}
 
   /* red blink for down external APIs / alarms */
@@ -1075,6 +1078,38 @@ refreshAllFlows();
 
 /* ===== floating apps ===== */
 const PLANETS=[];
+function wrapAppLabel(name){
+  let main=name,sub='';
+  const pm=name.match(/^(.+?)\s*(\([^)]+\))$/);
+  if(pm){main=pm[1].trim();sub=pm[2].trim();}
+  const words=main.split(/\s+/).filter(Boolean);
+  let lines=[];
+  if(words.length<=1)lines=[main];
+  else if(words.length===2)lines=main.length<=16?[main]:words;
+  else if(words.length===3)lines=words;
+  else if(words.length===4)lines=[words.slice(0,2).join(' '),words.slice(2).join(' ')];
+  else lines=[words.slice(0,Math.ceil(words.length/2)).join(' '),words.slice(Math.ceil(words.length/2)).join(' ')];
+  if(sub)lines.push(sub);
+  const maxLen=Math.max(...lines.map(l=>l.length),1);
+  const fontSize=maxLen>16?9.5:maxLen>13?10:maxLen>10?10.5:11.5;
+  const lineH=fontSize*1.38;
+  const textW=maxLen*fontSize*0.54;
+  const textH=lines.length*lineH;
+  const pad=20;
+  const r=Math.max(54,Math.ceil(Math.max(textW/2,textH/2)+pad));
+  return{lines,fontSize,lineH,r};
+}
+function buildAppLabel(layout){
+  const text=el('text',{class:'app-name','text-anchor':'middle','dominant-baseline':'middle'});
+  const startY=-((layout.lines.length-1)*layout.lineH)/2;
+  layout.lines.forEach((line,i)=>{
+    const isSub=line.startsWith('(');
+    const ts=el('tspan',{x:0,dy:i===0?startY:layout.lineH,'font-size':isSub?layout.fontSize*.88:layout.fontSize,
+      fill:isSub?'var(--ink-dim)':'var(--ink)','font-weight':isSub?500:600,'font-family':isSub?'var(--mono)':'var(--body)'});
+    ts.textContent=line;text.appendChild(ts);
+  });
+  return text;
+}
 function borderPoint(px,py){
   const dx=px-CFG.CX,dy=py-CFG.CY,hw=C.w/2,hh=C.h/2;
   const tx=Math.abs(dx)>1?hw/Math.abs(dx):1e9, ty=Math.abs(dy)>1?hh/Math.abs(dy):1e9, t=Math.min(tx,ty);
@@ -1085,18 +1120,21 @@ function borderPoint(px,py){
   function place(list,ring,off){
     list.forEach((a,i)=>{
       const [code,name,,health,addr,monId]=a, ang=(i/list.length)*Math.PI*2+off, speed=ring===0?0.05:-0.032;
+      const layout=wrapAppLabel(name), r=layout.r;
       const line=el('path',{fill:'none',stroke:HC[health],'stroke-width':1.1,opacity:.3,class:'applink'});Llinks.appendChild(line);
       const g=el('g',{class:'planet'});g.dataset.code=code;g.dataset.mon=monId||'';
       g.append(
-        el('circle',{r:48,fill:HC[health],opacity:.16,filter:'url(#softglow)'}),
-        el('circle',{r:34,fill:'url(#gPlanet)',stroke:HC[health],'stroke-width':2.2}),
-        el('circle',{r:34,fill:'none',stroke:HC[health],'stroke-width':1.1,opacity:.5,'stroke-dasharray':'3 4'}));
-      const t=el('text',{'text-anchor':'middle','dominant-baseline':'middle','font-size':code.length>3?10:13.5,fill:'var(--ink)','font-weight':600,'font-family':'var(--disp)'});t.textContent=code;g.appendChild(t);
-      g.appendChild(el('circle',{cx:24,cy:-24,r:5,fill:HC[health],stroke:'#0b1024','stroke-width':1.5,filter:'url(#glow)'}));
-      if(monId) monLabel(g,0,40,monId,{dy:0});
+        el('circle',{class:'app-glow',r:r+20,fill:HC[health],opacity:.14,filter:'url(#softglow)'}),
+        el('circle',{class:'app-body',r,fill:'url(#gPlanet)',stroke:HC[health],'stroke-width':2.4}),
+        el('circle',{class:'app-ring',r,fill:'none',stroke:HC[health],'stroke-width':1.2,opacity:.45,'stroke-dasharray':'4 5'}));
+      const labelEl=buildAppLabel(layout);g.appendChild(labelEl);
+      const healthDot=el('circle',{class:'app-health',cx:r*.68,cy:-r*.68,r:5.5,fill:HC[health],stroke:'#0b1024','stroke-width':1.5,filter:'url(#glow)'});
+      g.appendChild(healthDot);
+      let monT=null;
+      if(monId)monT=monLabel(g,0,r+14,monId,{size:7,dy:0});
       Lplanets.appendChild(g);
       const pkt=el('circle',{r:2.6,fill:HC[health],filter:'url(#glow)'});Lpart.appendChild(pkt);
-      const obj={code,name,health,ring,ang,speed,g,line,pkt,pktT:Math.random(),rx:CFG.rings[ring].rx,ry:CFG.rings[ring].ry,x:0,y:0,addr:addr||'',mon:monId||'',fixed:false,r:34};
+      const obj={code,name,health,ring,ang,speed,g,line,pkt,pktT:Math.random(),rx:CFG.rings[ring].rx,ry:CFG.rings[ring].ry,x:0,y:0,addr:addr||'',mon:monId||'',fixed:false,r,layout,healthDot,monT};
       PLANETS.push(obj);
       g.addEventListener('click',e=>{if(editMode){e.stopPropagation();selectEditable('planet:'+code);return;}e.stopPropagation();openApp(obj);highlight(code);});
       g.addEventListener('pointerenter',()=>{if(editMode||dragging)return;highlight(code)});
@@ -1261,7 +1299,12 @@ function setNodeMsCell(cell,b){
 function setNodePlanet(code,b){
   const p=PLANETS.find(x=>x.code===code); if(!p)return;
   p.x=b.cx;p.y=b.cy;p.r=b.r||p.r;p.fixed=true;
-  p.g.querySelectorAll('circle').forEach((c,i)=>{if(i===0)c.setAttribute('r',b.r+14);else if(i===1||i===2)c.setAttribute('r',b.r);});
+  const r=p.r;
+  p.g.querySelector('.app-glow')?.setAttribute('r',r+20);
+  p.g.querySelector('.app-body')?.setAttribute('r',r);
+  p.g.querySelector('.app-ring')?.setAttribute('r',r);
+  if(p.healthDot){p.healthDot.setAttribute('cx',r*.68);p.healthDot.setAttribute('cy',-r*.68);}
+  if(p.monT){p.monT.setAttribute('x',0);p.monT.setAttribute('y',r+14);}
   updatePlanet(p);
 }
 function registerEditable(spec){EDIT_REG.set(spec.id,spec);}
@@ -1278,7 +1321,7 @@ function initEditRegistry(){
     getBounds:()=>({x:s.x,y:s.y,w:s.w,h:s.h}),setBounds:b=>setNodeSpine(s.id,b)}));
   (CFG.groupBoxes||[]).forEach(box=>registerEditable({id:box.id,label:box.label,type:'rect',g:GROUP_UI[box.id]?.g,resizable:true,
     getBounds:()=>({cx:box.x,cy:box.y+box.h/2,w:box.w,h:box.h}),setBounds:b=>setNodeGroupBox(box.id,{x:b.cx,y:b.cy-b.h/2,w:b.w,h:b.h})}));
-  PLANETS.forEach(p=>registerEditable({id:'planet:'+p.code,label:p.code,type:'planet',g:p.g,resizable:true,
+  PLANETS.forEach(p=>registerEditable({id:'planet:'+p.code,label:p.name,type:'planet',g:p.g,resizable:true,
     getBounds:()=>({cx:p.fixed?p.x:CFG.CX+Math.cos(p.ang)*p.rx,cy:p.fixed?p.y:CFG.CY+Math.sin(p.ang)*p.ry,r:p.r}),
     setBounds:b=>setNodePlanet(p.code,b)}));
 }
