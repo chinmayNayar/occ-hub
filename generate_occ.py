@@ -22,6 +22,28 @@ import os
 import re
 from pathlib import Path
 
+from monitoring_registry import (
+    APP_MON,
+    DB_MON,
+    EXTERNAL_MON,
+    MF_MON,
+    MS_MON,
+    SHARED_MON,
+    fmt_mon,
+    load_registry_json,
+    lookup_app_mon,
+    lookup_external_mon,
+    lookup_internal_mon,
+    lookup_job_mon,
+    lookup_kafka_mon,
+    lookup_ms_mon,
+    lookup_shared_mon,
+    lookup_sp_mon,
+    norm,
+    norm_path,
+    parse_mon,
+)
+
 CX, CY = 930, 680
 
 GROUP_LABELS = {
@@ -36,16 +58,19 @@ GROUP_LABELS = {
     "shared_path": ("SHARED PATH", "MVT paths", "#6BA4FF"),
 }
 
-GROUP_ORDER = [
-    "sp",
-    "external",
-    "internal",
-    "jobs",
-    "kafka_consumer",
-    "kafka_producer",
-    "redis",
-    "shared_path",
-]
+# Lowest monitor ID per API group — used to stack boxes top-to-bottom in M order
+GROUP_MON_START = {
+    "sp": 15,
+    "external": 41,
+    "shared_path": 52,
+    "jobs": 54,
+    "kafka_producer": 61,
+    "kafka_consumer": 101,
+    "redis": 159,
+    "internal": 160,
+}
+
+GROUP_ORDER = sorted(GROUP_MON_START.keys(), key=lambda g: GROUP_MON_START[g])
 
 MS_SHORT_NAMES = {
     "occhub-admin-ms": "ADMIN",
@@ -63,35 +88,43 @@ MS_SHORT_NAMES = {
 }
 
 MON_RE = re.compile(r"\bM(\d+)\b", re.I)
-
-# Monitoring point IDs from OCCHUB_Drawio_File_V1.drawio
-MS_CELL_MON = list(range(2, 13))  # M2–M12 (11 microservices)
-DB_MON = {"mongo": 13, "aims": 14}
-MON_PLAN: dict[str, range | list[int]] = {
-    "ms": range(2, 13),
-    "mongo": [13],
-    "aims": [14],
-    "sp": range(15, 41),           # 26 stored procedures
-    "external": range(41, 52),      # 11 partner APIs
-    "shared_path": range(52, 54),   # 2 MVT paths
-    "jobs": range(54, 61),          # 7 cron jobs
-    "kafka_producer": range(61, 101),   # 40 topics
-    "kafka_consumer": range(101, 159),  # 58 topics (diagram range)
-    "redis": [159],
-    "internal": range(160, 497),    # 337 REST endpoints
-    "apps": range(497, 519),        # 22 floating apps
-}
-MF_MON = 1
 MS_MF_NAME = "occhub-mf"
 
+# Canonical microservice order → M2–M12
+MS_ORDER = [
+    "occhub-admin-ms",
+    "occhub-flight-ms",
+    "occhub-crew-ms",
+    "occhub-weather-ms",
+    "occhub-dispatch-ms",
+    "occhub-externalcomunication-ms",
+    "occhub-crewresoucedashboard-ms",
+    "occhub-rosterautomation-ms",
+    "occhub-streamorchestor-ms",
+    "occhub-ingesthub-ms",
+    "occhub-eventConsumer-service-ms",
+]
 
-def parse_mon(text: str) -> int | None:
-    m = MON_RE.search(text or "")
-    return int(m.group(1)) if m else None
+
+def path_aliases(path: str) -> list[str]:
+    p = norm_path(path)
+    out = [p, p.lstrip("/")]
+    if "/crew/api/" in p:
+        out.append(p.replace("/crew/api/", "/crewdashboard/api/"))
+    if "/crewdashboard/api/" in p:
+        out.append(p.replace("/crewdashboard/api/", "/crew/api/"))
+    if "/weatherapi/" in p:
+        out.append(p.replace("/weatherapi/", "/weather/api/"))
+    if "/weather/api/" in p:
+        out.append(p.replace("/weather/api/", "/weatherapi/"))
+    return list(dict.fromkeys(out))
 
 
-def fmt_mon(n: int) -> str:
-    return f"M{n}"
+def lookup_internal(path: str, registry: dict[str, int]) -> int | None:
+    for alias in path_aliases(path):
+        if alias in registry:
+            return registry[alias]
+    return lookup_internal_mon(path, registry)
 
 
 def mon_range_str(nums: list[int]) -> str:
@@ -118,14 +151,17 @@ def item_sort_key(it: dict) -> tuple[int, str]:
 
 
 def assign_group_mons(items: list[dict], nums: range | list[int]) -> None:
+    """Legacy sequential assign — prefer registry lookup in assign_monitoring."""
     slot = list(nums)
     for i, item in enumerate(sorted(items, key=item_sort_key)):
         if i < len(slot):
             item["mon"] = fmt_mon(slot[i])
 
 
-def assign_monitoring(cfg: dict) -> None:
-    """Attach monitoring point IDs per OCCHUB draw.io numbering."""
+def assign_monitoring(cfg: dict, base: Path | None = None) -> None:
+    """Attach monitoring point IDs from authoritative registry (name/path lookup)."""
+    base = base or Path(__file__).resolve().parent
+    reg = load_registry_json(base)
     cfg["mf"]["mon"] = fmt_mon(MF_MON)
 
     ms_entries = [
@@ -133,14 +169,21 @@ def assign_monitoring(cfg: dict) -> None:
         if not (isinstance(e, list) and len(e) > 1 and e[1] == MS_MF_NAME)
         and e != MS_MF_NAME
     ]
-    cfg["ms"] = ms_entries
-    for i, entry in enumerate(ms_entries):
-        mon = fmt_mon(MS_CELL_MON[i] if i < len(MS_CELL_MON) else MS_CELL_MON[-1] + i - len(MS_CELL_MON) + 1)
-        if isinstance(entry, list):
-            short, full = entry[0], entry[1]
-            cfg["ms"][i] = [short, full, mon]
-        else:
-            cfg["ms"][i] = [str(entry), str(entry), mon]
+    # Re-order MS cells to canonical M2–M12 order
+    name_to_entry = {}
+    for entry in ms_entries:
+        full = entry[1] if isinstance(entry, list) and len(entry) > 1 else str(entry)
+        name_to_entry[full] = entry
+    ordered_ms = []
+    for svc in MS_ORDER:
+        if svc in name_to_entry:
+            entry = name_to_entry[svc]
+            mon = fmt_mon(lookup_ms_mon(svc) or 2)
+            if isinstance(entry, list):
+                ordered_ms.append([entry[0], entry[1], mon])
+            else:
+                ordered_ms.append([str(entry), str(entry), mon])
+    cfg["ms"] = ordered_ms
 
     groups = cfg.get("apiGroups") or {}
 
@@ -161,30 +204,76 @@ def assign_monitoring(cfg: dict) -> None:
     for item in ms_items:
         item["mon"] = name_to_mon.get(item.get("name", ""), item.get("mon", ""))
 
-    for gid, nums in MON_PLAN.items():
-        if gid in ("ms", "mongo", "aims"):
-            continue
-        assign_group_mons(groups.get(gid) or [], nums)
+    for item in groups.get("sp", []):
+        mid = lookup_sp_mon(item.get("name", ""), reg["sp"]) or parse_mon(item.get("mon", ""))
+        if mid:
+            item["mon"] = fmt_mon(mid)
 
-    for i, app in enumerate(cfg.get("apps") or []):
-        mon = fmt_mon(list(MON_PLAN["apps"])[i]) if i < len(MON_PLAN["apps"]) else fmt_mon(519 + i)
-        if len(app) >= 6:
-            app[5] = mon
-        else:
-            app.append(mon)
+    for item in groups.get("external", []):
+        mid = lookup_external_mon(item.get("name", ""))
+        if mid:
+            item["mon"] = fmt_mon(mid)
+
+    for item in groups.get("shared_path", []):
+        mid = lookup_shared_mon(item.get("name", ""))
+        if mid:
+            item["mon"] = fmt_mon(mid)
+
+    for item in groups.get("jobs", []):
+        mid = lookup_job_mon(item.get("name", ""))
+        if mid:
+            item["mon"] = fmt_mon(mid)
+
+    for item in groups.get("kafka_producer", []):
+        mid = lookup_kafka_mon(item.get("name", ""), reg["kafka_producer"])
+        if mid:
+            item["mon"] = fmt_mon(mid)
+
+    for item in groups.get("kafka_consumer", []):
+        mid = lookup_kafka_mon(item.get("name", ""), reg["kafka_consumer"])
+        if mid:
+            item["mon"] = fmt_mon(mid)
+
+    for item in groups.get("redis", []):
+        item["mon"] = fmt_mon(159)
+
+    for item in groups.get("internal", []):
+        mid = lookup_internal(item.get("name", ""), reg["internal"])
+        if mid is None:
+            mid = parse_mon(item.get("mon", ""))
+        if mid:
+            item["mon"] = fmt_mon(mid)
+
+    for app in cfg.get("apps") or []:
+        name = app[1] if len(app) > 1 else ""
+        mid = lookup_app_mon(name)
+        if mid:
+            mon = fmt_mon(mid)
+            if len(app) >= 6:
+                app[5] = mon
+            else:
+                app.append(mon)
 
     group_mon: dict[str, str] = {}
     for gid in ("ms", "mongo", "aims", *GROUP_ORDER):
         nums = item_mon_nums(groups.get(gid) or [])
-        if gid in MON_PLAN and not nums:
-            plan = list(MON_PLAN[gid])
-            group_mon[gid] = mon_range_str(plan)
-        else:
-            group_mon[gid] = mon_range_str(nums)
+        group_mon[gid] = mon_range_str(nums)
 
     cfg["groupMon"] = group_mon
     for box in cfg.get("groupBoxes") or []:
         box["monRange"] = group_mon.get(box["id"], "")
+
+    # Sort items inside every group by monitor ID (M#) ascending
+    for gid, items in groups.items():
+        if items:
+            groups[gid] = sorted(items, key=item_sort_key)
+
+    # Sort floating apps by monitor ID (M497+)
+    def app_mon_key(app: list) -> tuple[int, str]:
+        mon = parse_mon(app[5]) if len(app) > 5 else lookup_app_mon(app[1] if len(app) > 1 else "")
+        return (mon if mon is not None else 99999, app[1] if len(app) > 1 else "")
+
+    cfg["apps"] = sorted(cfg.get("apps") or [], key=app_mon_key)
 
 
 def ms_short_label(full: str) -> str:
@@ -213,7 +302,7 @@ DEFAULT_CONFIG = {
     "apiGroups": {},
     "groupBoxes": [],
     "apps": [],
-    "rings": [{"rx": 880, "ry": 600}, {"rx": 1020, "ry": 700}],
+    "rings": [{"rx": 780, "ry": 520}, {"rx": 1060, "ry": 720}],
     "links": [],
 }
 
@@ -273,7 +362,7 @@ def build_config(base: Path | None = None) -> dict:
         y += gap
 
     cfg["groupBoxes"] = boxes
-    assign_monitoring(cfg)
+    assign_monitoring(cfg, base)
     return cfg
 
 
@@ -399,6 +488,10 @@ TEMPLATE = r"""<!DOCTYPE html>
   .planet .app-name tspan{fill:var(--ink)}
   .planet.hot .app-name tspan,.planet:hover .app-name tspan{fill:#F4F8FF}
   .dim{opacity:.12;transition:opacity .25s}.hot{opacity:1 !important}
+  .mon-dim{opacity:.14 !important;transition:opacity .22s}
+  .mon-highlight{opacity:1 !important;filter:url(#hoverglow)}
+  .mon-highlight .app-body,.mon-highlight>rect{stroke:#59E0FF !important;stroke-width:2.6 !important}
+  .planet.mon-highlight .app-glow{opacity:.35 !important}
 
   /* red blink for down external APIs / alarms */
   @keyframes blinkred{0%,45%{opacity:1}55%,100%{opacity:.1}}
@@ -517,7 +610,7 @@ TEMPLATE = r"""<!DOCTYPE html>
         </div>
       </div>
     </div>
-    <div class="search">🔍<input id="search" placeholder="find app / API / M#…"></div>
+    <div class="search">🔍<input id="search" placeholder="M# (e.g. 497) or name…"></div>
     <div class="btns">
       <button class="ctl" id="b-all">☰ All APIs</button>
       <button class="ctl" id="b-orbit">▶ Orbit</button>
@@ -612,12 +705,12 @@ function itemMon(it){return it.mon||(it.address&&String(it.address).match(/^M\d+
 function sortApiItems(items){
   const pri={down:0,crit:0,warn:1,ok:2};
   return [...items].sort((a,b)=>{
-    const pa=pri[a.health]??2,pb=pri[b.health]??2;
-    if(pa!==pb)return pa-pb;
     const ma=monNum(itemMon(a)),mb=monNum(itemMon(b));
     if(ma!=null&&mb!=null&&ma!==mb)return ma-mb;
     if(ma!=null&&mb==null)return-1;
     if(ma==null&&mb!=null)return 1;
+    const pa=pri[a.health]??2,pb=pri[b.health]??2;
+    if(pa!==pb)return pa-pb;
     return a.name.localeCompare(b.name);
   });
 }
@@ -625,6 +718,74 @@ function matchesMonQuery(q,it){
   const want=normMonQuery(q);if(!want)return false;
   const n=monNum(want),have=monNum(itemMon(it)||it.source||'');
   return n!==null&&have===n;
+}
+/* Monitor ID index + highlight */
+const MON_INDEX=new Map();
+function indexMon(mon,el,meta={}){
+  const n=monNum(mon);if(n==null||!el)return;
+  if(!MON_INDEX.has(n))MON_INDEX.set(n,[]);
+  MON_INDEX.get(n).push({el,...meta});
+}
+function parseMonRange(s){
+  const parts=String(s||'').split(/\s*[→–-]\s*/);
+  const lo=monNum(parts[0]),hi=monNum(parts[parts.length-1]||parts[0]);
+  return lo!=null?[lo,hi??lo]:null;
+}
+function monGroupBox(n){
+  if(n===1)return null;
+  if(n>=2&&n<=12)return GROUP_UI.ms?.g||null;
+  if(n===13)return GROUP_UI.mongo?.g||null;
+  if(n===14)return GROUP_UI.aims?.g||null;
+  for(const box of (CFG.groupBoxes||[])){
+    const r=parseMonRange(box.monRange);
+    if(r&&n>=r[0]&&n<=r[1])return GROUP_UI[box.id]?.g||null;
+  }
+  return null;
+}
+let activeMonSearch=null;
+function clearMonSearch(){
+  activeMonSearch=null;
+  document.querySelectorAll('.mon-highlight').forEach(e=>e.classList.remove('mon-highlight'));
+  document.querySelectorAll('.mon-dim').forEach(e=>e.classList.remove('mon-dim'));
+}
+function focusOnNode(el){
+  if(!el||!el.getBBox)return;
+  try{
+    const bb=el.getBBox(),cx=bb.x+bb.width/2,cy=bb.y+bb.height/2;
+    view.x=VB[2]/2-cx*view.k;view.y=VB[3]/2-cy*view.k;applyView();
+  }catch(e){}
+}
+function highlightMon(n){
+  clearMonSearch();
+  if(n==null)return false;
+  activeMonSearch=n;
+  const hits=MON_INDEX.get(n)||[];
+  const els=new Set();
+  hits.forEach(h=>{if(h.el)els.add(h.el);});
+  if(!els.size){
+    const bg=monGroupBox(n);
+    if(bg)els.add(bg);
+  }
+  if(!els.size)return false;
+  document.querySelectorAll('.nodeRect,.planet').forEach(e=>{
+    if(!els.has(e))e.classList.add('mon-dim');
+  });
+  els.forEach(e=>e.classList.add('mon-highlight'));
+  focusOnNode([...els][0]);
+  return true;
+}
+function buildMonIndex(){
+  MON_INDEX.clear();
+  document.querySelectorAll('.nodeRect[data-mon],.planet[data-mon]').forEach(el=>indexMon(el.dataset.mon,el));
+  const mf=document.querySelector('[data-id="MF"]');
+  if(mf)indexMon(MF.mon||'M1',mf,{label:'Mainframe'});
+  GROUP_ORDER.forEach(gid=>{
+    groupItems(gid).forEach(it=>{
+      const n=monNum(itemMon(it));if(n==null)return;
+      if(!MON_INDEX.has(n))MON_INDEX.set(n,[]);
+      MON_INDEX.get(n).push({type:'api',item:it,group:gid});
+    });
+  });
 }
 function dbCylinder(g,cx,topY,w,h,color,anyDown){
   const hexRgb=h=>[parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)];
@@ -759,7 +920,7 @@ function groupTitle(id){
   if(box) return [box.label,box.sub];
   return GROUP_META[id]||[id.toUpperCase(),''];
 }
-const GROUP_ORDER=['ms','mongo','aims','sp','external','internal','jobs','kafka_consumer','kafka_producer','redis','shared_path'];
+const GROUP_ORDER=['ms','mongo','aims',...(CFG.groupBoxes||[]).map(b=>b.id)];
 function allApiItems(){
   const out=[];
   GROUP_ORDER.forEach(gid=>groupItems(gid).forEach(it=>out.push({...it,_group:gid})));
@@ -867,7 +1028,7 @@ const containerLblR=label(containerG,C.x+C.w-24,C.y+24,'6E · OCP',{anchor:'end'
 /* ===== MF (own box, above MS) ===== */
 const MF=CFG.mf;
 (function(){
-  const g=el('g',{class:'nodeRect'});g.dataset.id='MF';
+  const g=el('g',{class:'nodeRect'});g.dataset.id='MF';g.dataset.mon=MF.mon||CFG.mf.mon||'M1';
   panel(g,{x:MF.x,y:MF.y,w:MF.w,h:MF.h,rx:11,stroke:'var(--indigo-2)'});
   g.appendChild(el('circle',{cx:MF.x-MF.w/2+16,cy:MF.y+MF.h/2,r:4,fill:HC.ok,filter:'url(#glow)'}));
   label(g,MF.x-MF.w/2+30,MF.y+MF.h/2-6,'MF',{anchor:'start',size:16,weight:700,font:'var(--disp)'});
@@ -950,7 +1111,7 @@ Llinks.appendChild(mfMsLink);
 
 /* ===== data stores (mongo/aims) — cylinder icons below MS ===== */
 CFG.spine.forEach(s=>{
-  const g=el('g',{class:'nodeRect db-node'});g.dataset.id=s.id;
+  const g=el('g',{class:'nodeRect db-node'});g.dataset.id=s.id;g.dataset.mon=s.mon||'';
   const store=(CFG.dataStores&&CFG.dataStores[s.id])||[];
   const anyDown=store.some(i=>i.health==='down'||i.health==='crit');
   const cx=s.x,cy=s.y+s.h/2,rx=s.w/2;
@@ -1116,33 +1277,35 @@ function borderPoint(px,py){
   return {x:CFG.CX+dx*t,y:CFG.CY+dy*t};
 }
 (function(){
-  const inner=CFG.apps.filter(a=>a[2]===0), outer=CFG.apps.filter(a=>a[2]===1);
-  function place(list,ring,off){
-    list.forEach((a,i)=>{
-      const [code,name,,health,addr,monId]=a, ang=(i/list.length)*Math.PI*2+off, speed=ring===0?0.05:-0.032;
-      const layout=wrapAppLabel(name), r=layout.r;
-      const line=el('path',{fill:'none',stroke:HC[health],'stroke-width':1.1,opacity:.3,class:'applink'});Llinks.appendChild(line);
-      const g=el('g',{class:'planet'});g.dataset.code=code;g.dataset.mon=monId||'';
-      g.append(
-        el('circle',{class:'app-glow',r:r+20,fill:HC[health],opacity:.14,filter:'url(#softglow)'}),
-        el('circle',{class:'app-body',r,fill:'url(#gPlanet)',stroke:HC[health],'stroke-width':2.4}),
-        el('circle',{class:'app-ring',r,fill:'none',stroke:HC[health],'stroke-width':1.2,opacity:.45,'stroke-dasharray':'4 5'}));
-      const labelEl=buildAppLabel(layout);g.appendChild(labelEl);
-      const healthDot=el('circle',{class:'app-health',cx:r*.68,cy:-r*.68,r:5.5,fill:HC[health],stroke:'#0b1024','stroke-width':1.5,filter:'url(#glow)'});
-      g.appendChild(healthDot);
-      let monT=null;
-      if(monId)monT=monLabel(g,0,r+14,monId,{size:7,dy:0});
-      Lplanets.appendChild(g);
-      const pkt=el('circle',{r:2.6,fill:HC[health],filter:'url(#glow)'});Lpart.appendChild(pkt);
-      const obj={code,name,health,ring,ang,speed,g,line,pkt,pktT:Math.random(),rx:CFG.rings[ring].rx,ry:CFG.rings[ring].ry,x:0,y:0,addr:addr||'',mon:monId||'',fixed:false,r,layout,healthDot,monT};
-      PLANETS.push(obj);
-      g.addEventListener('click',e=>{if(editMode){e.stopPropagation();selectEditable('planet:'+code);return;}e.stopPropagation();openApp(obj);highlight(code);});
-      g.addEventListener('pointerenter',()=>{if(editMode||dragging)return;highlight(code)});
-      g.addEventListener('pointerleave',()=>{if(editMode||selected)return;highlight(null)});
-    });
-  }
-  place(inner,0,0);place(outer,1,Math.PI/12);
+  const appMon=a=>monNum(a[5]||'')??99999;
+  const apps=[...CFG.apps].sort((a,b)=>appMon(a)-appMon(b)||a[1].localeCompare(b[1]));
+  const n=apps.length;
+  apps.forEach((a,i)=>{
+    const [code,name,,health,addr,monId]=a;
+    const ring=i%2===0?1:0;
+    const ang=-Math.PI/2+(i/n)*Math.PI*2;
+    const speed=ring===0?0.05:-0.032;
+    const layout=wrapAppLabel(name);
+    const r=layout.r;
+    const line=el('path',{fill:'none',stroke:HC[health],'stroke-width':1.1,opacity:.3,class:'applink'});Llinks.appendChild(line);
+    const g=el('g',{class:'planet'});g.dataset.code=code;g.dataset.mon=monId||'';
+    g.append(
+      el('circle',{class:'app-glow',r:r+14,fill:HC[health],opacity:.16,filter:'url(#softglow)'}),
+      el('circle',{class:'app-body',r,fill:'url(#gPlanet)',stroke:HC[health],'stroke-width':2.2}),
+      el('circle',{class:'app-ring',r,fill:'none',stroke:HC[health],'stroke-width':1.1,opacity:.5,'stroke-dasharray':'3 4'}));
+    g.appendChild(buildAppLabel(layout));
+    g.appendChild(el('circle',{class:'app-health',cx:r*.7,cy:-r*.7,r:5,fill:HC[health],stroke:'#0b1024','stroke-width':1.5,filter:'url(#glow)'}));
+    if(monId)monLabel(g,0,r+10,monId,{dy:0});
+    Lplanets.appendChild(g);
+    const pkt=el('circle',{r:2.6,fill:HC[health],filter:'url(#glow)'});Lpart.appendChild(pkt);
+    const obj={code,name,health,ring,ang,speed,g,line,pkt,pktT:Math.random(),rx:CFG.rings[ring].rx,ry:CFG.rings[ring].ry,x:0,y:0,addr:addr||'',mon:monId||'',fixed:false,r};
+    PLANETS.push(obj);
+    g.addEventListener('click',e=>{if(editMode){e.stopPropagation();selectEditable('planet:'+code);return;}e.stopPropagation();openApp(obj);highlight(code);});
+    g.addEventListener('pointerenter',()=>{if(editMode||dragging||activeMonSearch)return;highlight(code)});
+    g.addEventListener('pointerleave',()=>{if(editMode||selected||activeMonSearch)return;highlight(null)});
+  });
 })();
+buildMonIndex();
 function updatePlanet(p){
   if(p.fixed&&p.x!=null&&p.y!=null){
     p.g.setAttribute('transform',`translate(${p.x},${p.y})`);
@@ -1298,13 +1461,18 @@ function setNodeMsCell(cell,b){
 }
 function setNodePlanet(code,b){
   const p=PLANETS.find(x=>x.code===code); if(!p)return;
-  p.x=b.cx;p.y=b.cy;p.r=b.r||p.r;p.fixed=true;
+  p.x=b.cx;p.y=b.cy;p.r=b.r||p.r||34;p.fixed=true;
   const r=p.r;
-  p.g.querySelector('.app-glow')?.setAttribute('r',r+20);
-  p.g.querySelector('.app-body')?.setAttribute('r',r);
-  p.g.querySelector('.app-ring')?.setAttribute('r',r);
-  if(p.healthDot){p.healthDot.setAttribute('cx',r*.68);p.healthDot.setAttribute('cy',-r*.68);}
-  if(p.monT){p.monT.setAttribute('x',0);p.monT.setAttribute('y',r+14);}
+  const glow=p.g.querySelector('circle:not(.app-health):not(.app-body):not(.app-ring)');
+  const body=p.g.querySelector('.app-body');
+  const ring=p.g.querySelector('.app-ring');
+  if(glow)glow.setAttribute('r',r+14);
+  if(body)body.setAttribute('r',r);
+  if(ring)ring.setAttribute('r',r);
+  const hd=p.g.querySelector('.app-health');
+  if(hd){hd.setAttribute('cx',r*.7);hd.setAttribute('cy',-r*.7);}
+  const mon=p.g.querySelector('.mon-tag');
+  if(mon){mon.setAttribute('x',0);mon.setAttribute('y',r+12);}
   updatePlanet(p);
 }
 function registerEditable(spec){EDIT_REG.set(spec.id,spec);}
@@ -1537,29 +1705,37 @@ $('b-orbit').onclick=e=>{orbitOn=!orbitOn;e.target.classList.toggle('active',orb
 $('b-flow').onclick=e=>{flowOn=!flowOn;e.target.classList.toggle('active',flowOn);};
 
 $('search').addEventListener('input',e=>{
-  const q=e.target.value.trim().toUpperCase();
-  if(!q){highlight(selected);return;}
-  const monQ=normMonQuery(q);
+  const raw=e.target.value.trim();
+  const q=raw.toUpperCase();
+  if(!raw){clearMonSearch();highlight(selected);return;}
+  const monQ=normMonQuery(raw);
   if(monQ){
-    if(monQ==='M1'){showPanel('MF','Mainframe','info',row('Monitoring','M1')+row('System','MF'));return;}
-    const msCell=CFG.ms.find(m=>Array.isArray(m)&&String(m[2]||'').toUpperCase()===monQ);
-    if(msCell){const sn=msCell[0],fn=msCell[1];openGroupBox('ms',fn.toUpperCase());return;}
-    const flat=allApiItems();
-    if(flat.some(it=>matchesMonQuery(monQ,it))){openAllApis(monQ);return;}
-    const app=PLANETS.find(p=>String(p.mon||'').toUpperCase()===monQ);
-    if(app){selected=app.code;highlight(app.code);openApp(app);return;}
-    for(const sid of ['mongo','aims']){
-      const spine=(CFG.spine||[]).find(s=>s.id===sid);
-      if(spine&&String(spine.mon||'').toUpperCase()===monQ){openGroupBox(sid,monQ);return;}
+    const n=monNum(monQ);
+    if(n!=null&&highlightMon(n)){
+      if(n===1){showPanel('MF','Mainframe','info',row('Monitoring','M1')+row('System','MF'));return;}
+      const app=PLANETS.find(p=>monNum(p.mon)===n);
+      if(app){selected=app.code;highlight(app.code);openApp(app);return;}
+      const msCell=CFG.ms.find(m=>Array.isArray(m)&&monNum(m[2])===n);
+      if(msCell){openGroupBox('ms',msCell[1].toUpperCase());return;}
+      for(const sid of ['mongo','aims']){
+        const spine=(CFG.spine||[]).find(s=>s.id===sid);
+        if(spine&&monNum(spine.mon)===n){openGroupBox(sid,monQ);return;}
+      }
+      const apiHit=(MON_INDEX.get(n)||[]).find(h=>h.type==='api');
+      if(apiHit){openGroupBox(apiHit.group,monQ);return;}
+      const flat=allApiItems();
+      if(flat.some(it=>matchesMonQuery(monQ,it))){openAllApis(monQ);return;}
+      return;
     }
   }
+  clearMonSearch();
   const flat=allApiItems();
-  if(flat.some(s=>s.name.toUpperCase().includes(q)||(s.address&&s.address.toUpperCase().includes(q))||matchesMonQuery(q,s))){openAllApis(q);return;}
+  if(flat.some(s=>s.name.toUpperCase().includes(q)||(s.address&&s.address.toUpperCase().includes(q))||matchesMonQuery(raw,s))){openAllApis(raw);return;}
   for(const box of (CFG.groupBoxes||[])){
     const items=groupItems(box.id);
-    if((box.monRange&&box.monRange.toUpperCase().includes(q))||items.some(s=>s.name.toUpperCase().includes(q)||(s.address&&s.address.toUpperCase().includes(q))||matchesMonQuery(q,s))){openGroupBox(box.id,q);return;}
+    if((box.monRange&&box.monRange.toUpperCase().includes(q))||items.some(s=>s.name.toUpperCase().includes(q)||(s.address&&s.address.toUpperCase().includes(q))||matchesMonQuery(raw,s))){openGroupBox(box.id,raw);return;}
   }
-  if(groupItems('ms').some(s=>s.name.toUpperCase().includes(q)||matchesMonQuery(q,s))){openGroupBox('ms',q);return;}
+  if(groupItems('ms').some(s=>s.name.toUpperCase().includes(q)||matchesMonQuery(raw,s))){openGroupBox('ms',raw);return;}
   const h=PLANETS.find(p=>p.code.includes(q)||p.name.toUpperCase().includes(q)||String(p.mon||'').toUpperCase().includes(q));
   if(h){selected=h.code;highlight(h.code);}else highlight(null);
 });
